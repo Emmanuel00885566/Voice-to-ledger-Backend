@@ -55,6 +55,12 @@ src/
           route.ts        → PATCH, DELETE   /api/transactions/:id
         parse/
           route.ts        → POST   /api/transactions/parse
+      customers/
+        [id]/
+          route.ts        → PATCH, DELETE   /api/customers/:id
+      suppliers/
+        [id]/
+          route.ts        → PATCH, DELETE   /api/suppliers/:id
       voice/
         transcribe/
           route.ts        → POST   /api/voice/transcribe
@@ -90,6 +96,10 @@ The AI never saves a transaction directly. Every transaction is shown to the use
 | `/api/transactions` | GET | List transactions for a business |
 | `/api/transactions/:id` | PATCH | Edit a transaction |
 | `/api/transactions/:id` | DELETE | Delete a transaction |
+| `/api/customers/:id` | PATCH | Update a customer |
+| `/api/customers/:id` | DELETE | Delete a customer |
+| `/api/suppliers/:id` | PATCH | Update a supplier |
+| `/api/suppliers/:id` | DELETE | Delete a supplier |
 | `/api/dashboard` | GET | Sales, purchases, expenses, estimated profit |
 | `/api/financial-profile` | GET | Business Financial Profile summary |
 | `/api/financial-profile/export` | GET | Export profile (CSV/PDF) |

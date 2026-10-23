@@ -1,3 +1,5 @@
+import { DeepgramError } from "@deepgram/sdk";
+import type { ListenV1Response } from "@deepgram/sdk";
 import { deepgram } from "@/lib/deepgram";
 import { getAuthenticatedUser } from "@/lib/auth";
 
@@ -18,24 +20,14 @@ export async function POST(request: Request) {
   const buffer = Buffer.from(await audioFile.arrayBuffer());
 
   try {
-    const { result, error } = await deepgram.listen.prerecorded.transcribeFile(
-      buffer,
-      {
-        model: "nova-2",
-        language: "en", // we'll test Pidgin accuracy separately
-        smart_format: true,
-      }
-    );
-
-    if (error) {
-      return Response.json(
-        { error: "transcription_failed", message: error.message },
-        { status: 422 }
-      );
-    }
+    const response = (await deepgram.listen.v1.media.transcribeFile(buffer, {
+      model: "nova-2",
+      language: "en", // we'll test Pidgin accuracy separately
+      smart_format: true,
+    })) as ListenV1Response;
 
     const transcript =
-      result?.results?.channels?.[0]?.alternatives?.[0]?.transcript ?? "";
+      response?.results?.channels?.[0]?.alternatives?.[0]?.transcript ?? "";
 
     if (!transcript) {
       return Response.json(
@@ -46,6 +38,12 @@ export async function POST(request: Request) {
 
     return Response.json({ transcript, language_detected: "en" });
   } catch (err) {
+    if (err instanceof DeepgramError) {
+      return Response.json(
+        { error: "transcription_failed", message: err.message },
+        { status: 422 }
+      );
+    }
     return Response.json(
       { error: "transcription_failed", message: (err as Error).message },
       { status: 500 }

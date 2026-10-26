@@ -1,16 +1,17 @@
 import { z } from "zod";
 import { supabase } from "@/lib/supabase";
 import { getAuthenticatedUser } from "@/lib/auth";
+import { transactionDateSchema, positiveQuantity } from "@/lib/validation";
 
 const UpdateTransactionSchema = z.object({
   type: z.enum(["sale", "purchase", "expense", "receivable", "payable"]).optional(),
   description: z.string().optional(),
   product_name: z.string().optional(),
-  quantity: z.number().optional(),
+  quantity: positiveQuantity.optional(),
   unit: z.string().optional(),
-  amount: z.number().optional(),
+  amount: z.number().positive().optional(),
   currency: z.string().optional(),
-  transaction_date: z.string().optional(),
+  transaction_date: transactionDateSchema.optional(),
   payment_status: z.enum(["paid", "unpaid", "partially_paid"]).optional(),
   notes: z.string().optional(),
 });

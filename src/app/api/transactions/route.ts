@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { supabase } from "@/lib/supabase";
+import type { SupabaseClient } from "@supabase/supabase-js";
 import { getAuthenticatedUser } from "@/lib/auth";
 import { transactionDateSchema, positiveQuantity } from "@/lib/validation";
 
@@ -18,8 +18,8 @@ const CreateTransactionSchema = z.object({
   allow_duplicate: z.boolean().optional(),
 });
 
-async function getUserBusinessId(userId: string) {
-  const { data, error } = await supabase
+async function getUserBusinessId(db: SupabaseClient, userId: string) {
+  const { data, error } = await db
     .from("businesses")
     .select("id")
     .eq("owner_id", userId)
@@ -31,9 +31,9 @@ async function getUserBusinessId(userId: string) {
 }
 
 export async function POST(request: Request) {
-  const { user, error: authError } = await getAuthenticatedUser(request);
+  const { user, db, error: authError } = await getAuthenticatedUser(request);
 
-  if (authError || !user) {
+  if (authError || !user || !db) {
     return Response.json({ error: authError }, { status: 401 });
   }
 
@@ -47,7 +47,7 @@ export async function POST(request: Request) {
     );
   }
 
-  const { businessId, error: businessError } = await getUserBusinessId(user.id);
+  const { businessId, error: businessError } = await getUserBusinessId(db, user.id);
   if (businessError || !businessId) {
     return Response.json({ error: businessError ?? "business_not_found" }, { status: 404 });
   }
@@ -61,7 +61,7 @@ export async function POST(request: Request) {
   const idempotencyKey = request.headers.get("Idempotency-Key")?.trim() || null;
 
   if (idempotencyKey) {
-    const { data: replay, error: replayError } = await supabase
+    const { data: replay, error: replayError } = await db
       .from("transactions")
       .select("*")
       .eq("business_id", businessId)
@@ -84,7 +84,7 @@ export async function POST(request: Request) {
   if (!allow_duplicate) {
     const since = new Date(Date.now() - 60_000).toISOString();
 
-    let dupQuery = supabase
+    let dupQuery = db
       .from("transactions")
       .select("*")
       .eq("business_id", businessId)
@@ -108,7 +108,7 @@ export async function POST(request: Request) {
     }
   }
 
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from("transactions")
     .insert({
       business_id: businessId,
@@ -122,7 +122,7 @@ export async function POST(request: Request) {
     // Two identical requests arrived at the same moment: the unique index let
     // only one through, so return the winner instead of an error.
     if (error.code === "23505" && idempotencyKey) {
-      const { data: winner } = await supabase
+      const { data: winner } = await db
         .from("transactions")
         .select("*")
         .eq("business_id", businessId)
@@ -143,13 +143,13 @@ export async function POST(request: Request) {
 }
 
 export async function GET(request: Request) {
-  const { user, error: authError } = await getAuthenticatedUser(request);
+  const { user, db, error: authError } = await getAuthenticatedUser(request);
 
-  if (authError || !user) {
+  if (authError || !user || !db) {
     return Response.json({ error: authError }, { status: 401 });
   }
 
-  const { businessId, error: businessError } = await getUserBusinessId(user.id);
+  const { businessId, error: businessError } = await getUserBusinessId(db, user.id);
   if (businessError || !businessId) {
     return Response.json({ error: businessError ?? "business_not_found" }, { status: 404 });
   }
@@ -157,7 +157,7 @@ export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const type = searchParams.get("type");
 
-  let query = supabase
+  let query = db
     .from("transactions")
     .select("*")
     .eq("business_id", businessId)

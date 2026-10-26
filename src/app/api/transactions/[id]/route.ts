@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { supabase } from "@/lib/supabase";
+import type { SupabaseClient } from "@supabase/supabase-js";
 import { getAuthenticatedUser } from "@/lib/auth";
 import { transactionDateSchema, positiveQuantity } from "@/lib/validation";
 
@@ -16,8 +16,8 @@ const UpdateTransactionSchema = z.object({
   notes: z.string().optional(),
 });
 
-async function getUserBusinessId(userId: string) {
-  const { data, error } = await supabase
+async function getUserBusinessId(db: SupabaseClient, userId: string) {
+  const { data, error } = await db
     .from("businesses")
     .select("id")
     .eq("owner_id", userId)
@@ -32,9 +32,9 @@ export async function PATCH(
   request: Request,
   context: { params: Promise<{ id: string }> }
 ) {
-  const { user, error: authError } = await getAuthenticatedUser(request);
+  const { user, db, error: authError } = await getAuthenticatedUser(request);
 
-  if (authError || !user) {
+  if (authError || !user || !db) {
     return Response.json({ error: authError }, { status: 401 });
   }
 
@@ -49,7 +49,7 @@ export async function PATCH(
     );
   }
 
-  const { businessId, error: businessError } = await getUserBusinessId(user.id);
+  const { businessId, error: businessError } = await getUserBusinessId(db, user.id);
   if (businessError || !businessId) {
     return Response.json({ error: businessError ?? "business_not_found" }, { status: 404 });
   }
@@ -62,7 +62,7 @@ export async function PATCH(
     return Response.json({ error: "no_fields_to_update" }, { status: 400 });
   }
 
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from("transactions")
     .update(updates)
     .eq("id", id)
@@ -85,20 +85,20 @@ export async function DELETE(
   request: Request,
   context: { params: Promise<{ id: string }> }
 ) {
-  const { user, error: authError } = await getAuthenticatedUser(request);
+  const { user, db, error: authError } = await getAuthenticatedUser(request);
 
-  if (authError || !user) {
+  if (authError || !user || !db) {
     return Response.json({ error: authError }, { status: 401 });
   }
 
   const { id } = await context.params;
 
-  const { businessId, error: businessError } = await getUserBusinessId(user.id);
+  const { businessId, error: businessError } = await getUserBusinessId(db, user.id);
   if (businessError || !businessId) {
     return Response.json({ error: businessError ?? "business_not_found" }, { status: 404 });
   }
 
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from("transactions")
     .delete()
     .eq("id", id)

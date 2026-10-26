@@ -4,6 +4,7 @@ import { getAuthenticatedUser } from "@/lib/auth";
 
 const CreateBusinessSchema = z.object({
   name: z.string().min(1, "Business name is required"),
+  description: z.string().optional(),
   category: z.string().optional(),
   location: z.string().optional(),
   language: z.string().default("en"),
@@ -30,13 +31,14 @@ export async function POST(request: Request) {
   const { data, error } = await supabase
     .from("businesses")
     .insert({
-      owner_id: user.id,
-      name: parsed.data.name,
-      category: parsed.data.category,
-      location: parsed.data.location,
-      language: parsed.data.language,
-      currency: parsed.data.currency,
-    })
+  owner_id: user.id,
+  name: parsed.data.name,
+  description: parsed.data.description,
+  category: parsed.data.category,
+  location: parsed.data.location,
+  language: parsed.data.language,
+  currency: parsed.data.currency,
+})
     .select()
     .single();
 
@@ -71,6 +73,7 @@ const UpdateBusinessSchema = z.object({
   location: z.string().optional(),
   language: z.string().optional(),
   currency: z.string().optional(),
+  description: z.string().optional(),
 });
 
 export async function PATCH(request: Request) {

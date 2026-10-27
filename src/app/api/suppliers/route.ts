@@ -1,6 +1,7 @@
 import { z } from "zod";
-import { supabase } from "@/lib/supabase";
+import type { SupabaseClient } from "@supabase/supabase-js";
 import { getAuthenticatedUser } from "@/lib/auth";
+import { serverError } from "@/lib/errors";
 
 const CreateSupplierSchema = z.object({
   name: z.string().min(1, "Supplier name is required"),
@@ -9,22 +10,25 @@ const CreateSupplierSchema = z.object({
   address: z.string().optional(),
 });
 
-async function getUserBusinessId(userId: string) {
-  const { data, error } = await supabase
+async function getUserBusinessId(db: SupabaseClient, userId: string) {
+  const { data, error } = await db
     .from("businesses")
     .select("id")
     .eq("owner_id", userId)
     .maybeSingle();
 
-  if (error) return { businessId: null, error: error.message };
+  if (error) {
+    console.error("[api/suppliers getUserBusinessId]", error.message);
+    return { businessId: null, error: "business_lookup_failed" };
+  }
   if (!data) return { businessId: null, error: "business_not_found" };
   return { businessId: data.id, error: null };
 }
 
 export async function POST(request: Request) {
-  const { user, error: authError } = await getAuthenticatedUser(request);
+  const { user, db, error: authError } = await getAuthenticatedUser(request);
 
-  if (authError || !user) {
+  if (authError || !user || !db) {
     return Response.json({ error: authError }, { status: 401 });
   }
 
@@ -38,12 +42,12 @@ export async function POST(request: Request) {
     );
   }
 
-  const { businessId, error: businessError } = await getUserBusinessId(user.id);
+  const { businessId, error: businessError } = await getUserBusinessId(db, user.id);
   if (businessError || !businessId) {
     return Response.json({ error: businessError ?? "business_not_found" }, { status: 404 });
   }
 
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from("suppliers")
     .insert({
       business_id: businessId,
@@ -53,32 +57,32 @@ export async function POST(request: Request) {
     .single();
 
   if (error) {
-    return Response.json({ error: error.message }, { status: 500 });
+    return serverError(error, "api/suppliers");
   }
 
   return Response.json(data, { status: 201 });
 }
 
 export async function GET(request: Request) {
-  const { user, error: authError } = await getAuthenticatedUser(request);
+  const { user, db, error: authError } = await getAuthenticatedUser(request);
 
-  if (authError || !user) {
+  if (authError || !user || !db) {
     return Response.json({ error: authError }, { status: 401 });
   }
 
-  const { businessId, error: businessError } = await getUserBusinessId(user.id);
+  const { businessId, error: businessError } = await getUserBusinessId(db, user.id);
   if (businessError || !businessId) {
     return Response.json({ error: businessError ?? "business_not_found" }, { status: 404 });
   }
 
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from("suppliers")
     .select("*")
     .eq("business_id", businessId)
     .order("created_at", { ascending: false });
 
   if (error) {
-    return Response.json({ error: error.message }, { status: 500 });
+    return serverError(error, "api/suppliers");
   }
 
   return Response.json(data);

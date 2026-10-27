@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { getAuthenticatedUser } from "@/lib/auth";
+import { serverError } from "@/lib/errors";
 import { transactionDateSchema, positiveQuantity } from "@/lib/validation";
 
 const CreateTransactionSchema = z.object({
@@ -25,7 +26,10 @@ async function getUserBusinessId(db: SupabaseClient, userId: string) {
     .eq("owner_id", userId)
     .maybeSingle();
 
-  if (error) return { businessId: null, error: error.message };
+  if (error) {
+    console.error("[api/transactions getUserBusinessId]", error.message);
+    return { businessId: null, error: "business_lookup_failed" };
+  }
   if (!data) return { businessId: null, error: "business_not_found" };
   return { businessId: data.id, error: null };
 }
@@ -69,7 +73,7 @@ export async function POST(request: Request) {
       .maybeSingle();
 
     if (replayError) {
-      return Response.json({ error: replayError.message }, { status: 500 });
+      return serverError(replayError, "api/transactions");
     }
 
     if (replay) {
@@ -100,7 +104,7 @@ export async function POST(request: Request) {
     const { data: existing, error: dupError } = await dupQuery.maybeSingle();
 
     if (dupError) {
-      return Response.json({ error: dupError.message }, { status: 500 });
+      return serverError(dupError, "api/transactions");
     }
 
     if (existing) {
@@ -136,7 +140,7 @@ export async function POST(request: Request) {
         });
       }
     }
-    return Response.json({ error: error.message }, { status: 500 });
+    return serverError(error, "api/transactions");
   }
 
   return Response.json(data, { status: 201 });
@@ -170,7 +174,7 @@ export async function GET(request: Request) {
   const { data, error } = await query;
 
   if (error) {
-    return Response.json({ error: error.message }, { status: 500 });
+    return serverError(error, "api/transactions");
   }
 
   return Response.json(data);

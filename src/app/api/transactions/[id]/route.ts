@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { getAuthenticatedUser } from "@/lib/auth";
+import { serverError } from "@/lib/errors";
 import { transactionDateSchema, positiveQuantity } from "@/lib/validation";
 
 const UpdateTransactionSchema = z.object({
@@ -23,7 +24,10 @@ async function getUserBusinessId(db: SupabaseClient, userId: string) {
     .eq("owner_id", userId)
     .maybeSingle();
 
-  if (error) return { businessId: null, error: error.message };
+  if (error) {
+    console.error("[api/transactions/[id] getUserBusinessId]", error.message);
+    return { businessId: null, error: "business_lookup_failed" };
+  }
   if (!data) return { businessId: null, error: "business_not_found" };
   return { businessId: data.id, error: null };
 }
@@ -71,7 +75,7 @@ export async function PATCH(
     .maybeSingle();
 
   if (error) {
-    return Response.json({ error: error.message }, { status: 500 });
+    return serverError(error, "api/transactions/[id]");
   }
 
   if (!data) {
@@ -107,7 +111,7 @@ export async function DELETE(
     .maybeSingle();
 
   if (error) {
-    return Response.json({ error: error.message }, { status: 500 });
+    return serverError(error, "api/transactions/[id]");
   }
 
   if (!data) {

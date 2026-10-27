@@ -1,37 +1,41 @@
-import { supabase } from "@/lib/supabase";
+import type { SupabaseClient } from "@supabase/supabase-js";
 import { getAuthenticatedUser } from "@/lib/auth";
+import { serverError } from "@/lib/errors";
 
-async function getUserBusinessId(userId: string) {
-  const { data, error } = await supabase
+async function getUserBusinessId(db: SupabaseClient, userId: string) {
+  const { data, error } = await db
     .from("businesses")
     .select("id")
     .eq("owner_id", userId)
     .maybeSingle();
 
-  if (error) return { businessId: null, error: error.message };
+  if (error) {
+    console.error("[api/financial-profile getUserBusinessId]", error.message);
+    return { businessId: null, error: "business_lookup_failed" };
+  }
   if (!data) return { businessId: null, error: "business_not_found" };
   return { businessId: data.id, error: null };
 }
 
 export async function GET(request: Request) {
-  const { user, error: authError } = await getAuthenticatedUser(request);
+  const { user, db, error: authError } = await getAuthenticatedUser(request);
 
-  if (authError || !user) {
+  if (authError || !user || !db) {
     return Response.json({ error: authError }, { status: 401 });
   }
 
-  const { businessId, error: businessError } = await getUserBusinessId(user.id);
+  const { businessId, error: businessError } = await getUserBusinessId(db, user.id);
   if (businessError || !businessId) {
     return Response.json({ error: businessError ?? "business_not_found" }, { status: 404 });
   }
 
-  const { data: transactions, error } = await supabase
+  const { data: transactions, error } = await db
     .from("transactions")
     .select("type, amount, transaction_date, payment_status")
     .eq("business_id", businessId);
 
   if (error) {
-    return Response.json({ error: error.message }, { status: 500 });
+    return serverError(error, "api/financial-profile");
   }
 
   const sales = transactions.filter((t) => t.type === "sale");

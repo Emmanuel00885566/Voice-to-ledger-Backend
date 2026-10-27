@@ -1,25 +1,57 @@
 import { z } from "zod";
-import { supabase } from "@/lib/supabase";
 import { getAuthenticatedUser } from "@/lib/auth";
+import { serverError } from "@/lib/errors";
+import { transactionDateSchema } from "@/lib/validation";
+
+// Phone: digits with an optional leading +, spaces or dashes (e.g. 08012345678 or +234 801 234 5678)
+const phoneSchema = z
+  .string()
+  .regex(/^\+?[0-9\s-]{7,20}$/, "Enter a valid phone number");
 
 const CreateProfileSchema = z.object({
-  full_name: z.string().min(1, "Full name is required"),
-  phone: z.string().optional(),
-  gender: z.string().optional(),
-  date_of_birth: z.string().optional(),
+  full_name: z.string().trim().min(1, "Full name is required").max(100),
+  phone: phoneSchema.optional(),
+  gender: z.string().trim().min(1).max(30).optional(),
+  // Reuses the "valid date, not in the future" rule
+  date_of_birth: transactionDateSchema.optional(),
 });
 
 const UpdateProfileSchema = z.object({
-  full_name: z.string().min(1).optional(),
-  phone: z.string().optional(),
-  gender: z.string().optional(),
-  date_of_birth: z.string().optional(),
+  full_name: z.string().trim().min(1).max(100).optional(),
+  phone: phoneSchema.optional(),
+  gender: z.string().trim().min(1).max(30).optional(),
+  date_of_birth: transactionDateSchema.optional(),
 });
 
-export async function POST(request: Request) {
-  const { user, error: authError } = await getAuthenticatedUser(request);
+export async function GET(request: Request) {
+  const { user, db, error: authError } = await getAuthenticatedUser(request);
 
-  if (authError || !user) {
+  if (authError || !user || !db) {
+    return Response.json({ error: authError }, { status: 401 });
+  }
+
+  const { data, error } = await db
+    .from("profiles")
+    .select("*")
+    .eq("user_id", user.id)
+    .maybeSingle();
+
+  if (error) {
+    return serverError(error, "GET api/profile");
+  }
+
+  if (!data) {
+    return Response.json({ error: "profile_not_found" }, { status: 404 });
+  }
+
+  // Email comes from the login account, so it is included for the review screen
+  return Response.json({ ...data, email: user.email });
+}
+
+export async function POST(request: Request) {
+  const { user, db, error: authError } = await getAuthenticatedUser(request);
+
+  if (authError || !user || !db) {
     return Response.json({ error: authError }, { status: 401 });
   }
 
@@ -33,7 +65,22 @@ export async function POST(request: Request) {
     );
   }
 
-  const { data, error } = await supabase
+  // One profile per user
+  const { data: existing, error: existingError } = await db
+    .from("profiles")
+    .select("id")
+    .eq("user_id", user.id)
+    .limit(1);
+
+  if (existingError) {
+    return serverError(existingError, "POST api/profile (existing check)");
+  }
+
+  if (existing && existing.length > 0) {
+    return Response.json({ error: "profile_already_exists" }, { status: 409 });
+  }
+
+  const { data, error } = await db
     .from("profiles")
     .insert({
       user_id: user.id,
@@ -43,40 +90,20 @@ export async function POST(request: Request) {
     .single();
 
   if (error) {
-    return Response.json({ error: error.message }, { status: 500 });
+    // Two requests at the same moment: a unique index lets only one through
+    if (error.code === "23505") {
+      return Response.json({ error: "profile_already_exists" }, { status: 409 });
+    }
+    return serverError(error, "POST api/profile");
   }
 
-  return Response.json(data, { status: 201 });
-}
-
-export async function GET(request: Request) {
-  const { user, error: authError } = await getAuthenticatedUser(request);
-
-  if (authError || !user) {
-    return Response.json({ error: authError }, { status: 401 });
-  }
-
-  const { data, error } = await supabase
-    .from("profiles")
-    .select("*")
-    .eq("user_id", user.id)
-    .maybeSingle();
-
-  if (error) {
-    return Response.json({ error: error.message }, { status: 500 });
-  }
-
-  if (!data) {
-    return Response.json({ error: "profile_not_found" }, { status: 404 });
-  }
-
-  return Response.json(data);
+  return Response.json({ ...data, email: user.email }, { status: 201 });
 }
 
 export async function PATCH(request: Request) {
-  const { user, error: authError } = await getAuthenticatedUser(request);
+  const { user, db, error: authError } = await getAuthenticatedUser(request);
 
-  if (authError || !user) {
+  if (authError || !user || !db) {
     return Response.json({ error: authError }, { status: 401 });
   }
 
@@ -90,6 +117,7 @@ export async function PATCH(request: Request) {
     );
   }
 
+  // Only update fields that were actually sent
   const updates = Object.fromEntries(
     Object.entries(parsed.data).filter(([, value]) => value !== undefined)
   );
@@ -98,20 +126,20 @@ export async function PATCH(request: Request) {
     return Response.json({ error: "no_fields_to_update" }, { status: 400 });
   }
 
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from("profiles")
-    .update(updates)
+    .update({ ...updates, updated_at: new Date().toISOString() })
     .eq("user_id", user.id)
     .select()
     .maybeSingle();
 
   if (error) {
-    return Response.json({ error: error.message }, { status: 500 });
+    return serverError(error, "PATCH api/profile");
   }
 
   if (!data) {
     return Response.json({ error: "profile_not_found" }, { status: 404 });
   }
 
-  return Response.json(data);
+  return Response.json({ ...data, email: user.email });
 }

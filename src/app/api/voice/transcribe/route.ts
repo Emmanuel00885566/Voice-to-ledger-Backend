@@ -3,6 +3,9 @@ import type { ListenV1Response } from "@deepgram/sdk";
 import { deepgram } from "@/lib/deepgram";
 import { getAuthenticatedUser } from "@/lib/auth";
 
+// Upload limits (threat model T-17): keeps one request from being huge or off-topic
+const MAX_AUDIO_BYTES = 10 * 1024 * 1024; // 10 MB
+
 export async function POST(request: Request) {
   const { user, error: authError } = await getAuthenticatedUser(request);
 
@@ -10,13 +13,32 @@ export async function POST(request: Request) {
     return Response.json({ error: authError }, { status: 401 });
   }
 
-  const formData = await request.formData();
-  const audioFile = formData.get("audio") as File | null;
+  let formData: FormData;
+  try {
+    formData = await request.formData();
+  } catch {
+    return Response.json({ error: "invalid_form_data" }, { status: 400 });
+  }
 
-  if (!audioFile) {
+  const audioFile = formData.get("audio");
+
+  if (!(audioFile instanceof File)) {
     return Response.json({ error: "No audio file provided" }, { status: 400 });
   }
 
+  if (audioFile.size === 0) {
+    return Response.json({ error: "empty_audio_file" }, { status: 400 });
+  }
+
+  if (audioFile.size > MAX_AUDIO_BYTES) {
+    return Response.json({ error: "audio_too_large", max_bytes: MAX_AUDIO_BYTES }, { status: 413 });
+  }
+
+  if (audioFile.type && !audioFile.type.startsWith("audio/") && audioFile.type !== "application/octet-stream") {
+    return Response.json({ error: "unsupported_file_type" }, { status: 415 });
+  }
+
+  // The audio is only held in memory for this request. It is never saved.
   const buffer = Buffer.from(await audioFile.arrayBuffer());
 
   try {
@@ -38,14 +60,17 @@ export async function POST(request: Request) {
 
     return Response.json({ transcript, language_detected: "en" });
   } catch (err) {
+    // Provider details stay in the server log, not in the response (T-18)
+    console.error("[api/voice/transcribe]", (err as Error).message);
+
     if (err instanceof DeepgramError) {
       return Response.json(
-        { error: "transcription_failed", message: err.message },
+        { error: "transcription_failed", message: "Could not transcribe the audio, please try again or type manually" },
         { status: 422 }
       );
     }
     return Response.json(
-      { error: "transcription_failed", message: (err as Error).message },
+      { error: "transcription_failed", message: "Something went wrong, please try again" },
       { status: 500 }
     );
   }

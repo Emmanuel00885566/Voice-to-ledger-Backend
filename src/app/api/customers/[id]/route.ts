@@ -1,6 +1,7 @@
 import { z } from "zod";
-import { supabase } from "@/lib/supabase";
+import type { SupabaseClient } from "@supabase/supabase-js";
 import { getAuthenticatedUser } from "@/lib/auth";
+import { serverError } from "@/lib/errors";
 
 const UpdateCustomerSchema = z.object({
   name: z.string().min(1).optional(),
@@ -9,14 +10,17 @@ const UpdateCustomerSchema = z.object({
   address: z.string().optional(),
 });
 
-async function getUserBusinessId(userId: string) {
-  const { data, error } = await supabase
+async function getUserBusinessId(db: SupabaseClient, userId: string) {
+  const { data, error } = await db
     .from("businesses")
     .select("id")
     .eq("owner_id", userId)
     .maybeSingle();
 
-  if (error) return { businessId: null, error: error.message };
+  if (error) {
+    console.error("[api/customers/[id] getUserBusinessId]", error.message);
+    return { businessId: null, error: "business_lookup_failed" };
+  }
   if (!data) return { businessId: null, error: "business_not_found" };
   return { businessId: data.id, error: null };
 }
@@ -25,9 +29,9 @@ export async function PATCH(
   request: Request,
   context: { params: Promise<{ id: string }> }
 ) {
-  const { user, error: authError } = await getAuthenticatedUser(request);
+  const { user, db, error: authError } = await getAuthenticatedUser(request);
 
-  if (authError || !user) {
+  if (authError || !user || !db) {
     return Response.json({ error: authError }, { status: 401 });
   }
 
@@ -42,7 +46,7 @@ export async function PATCH(
     );
   }
 
-  const { businessId, error: businessError } = await getUserBusinessId(user.id);
+  const { businessId, error: businessError } = await getUserBusinessId(db, user.id);
   if (businessError || !businessId) {
     return Response.json({ error: businessError ?? "business_not_found" }, { status: 404 });
   }
@@ -55,7 +59,7 @@ export async function PATCH(
     return Response.json({ error: "no_fields_to_update" }, { status: 400 });
   }
 
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from("customers")
     .update(updates)
     .eq("id", id)
@@ -64,7 +68,7 @@ export async function PATCH(
     .maybeSingle();
 
   if (error) {
-    return Response.json({ error: error.message }, { status: 500 });
+    return serverError(error, "PATCH api/customers/[id]");
   }
 
   if (!data) {
@@ -78,20 +82,20 @@ export async function DELETE(
   request: Request,
   context: { params: Promise<{ id: string }> }
 ) {
-  const { user, error: authError } = await getAuthenticatedUser(request);
+  const { user, db, error: authError } = await getAuthenticatedUser(request);
 
-  if (authError || !user) {
+  if (authError || !user || !db) {
     return Response.json({ error: authError }, { status: 401 });
   }
 
   const { id } = await context.params;
 
-  const { businessId, error: businessError } = await getUserBusinessId(user.id);
+  const { businessId, error: businessError } = await getUserBusinessId(db, user.id);
   if (businessError || !businessId) {
     return Response.json({ error: businessError ?? "business_not_found" }, { status: 404 });
   }
 
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from("customers")
     .delete()
     .eq("id", id)
@@ -100,7 +104,7 @@ export async function DELETE(
     .maybeSingle();
 
   if (error) {
-    return Response.json({ error: error.message }, { status: 500 });
+    return serverError(error, "DELETE api/customers/[id]");
   }
 
   if (!data) {

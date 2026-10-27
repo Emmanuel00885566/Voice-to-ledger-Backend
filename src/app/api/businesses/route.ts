@@ -1,6 +1,6 @@
 import { z } from "zod";
-import { supabase } from "@/lib/supabase";
 import { getAuthenticatedUser } from "@/lib/auth";
+import { serverError } from "@/lib/errors";
 
 const CreateBusinessSchema = z.object({
   name: z.string().min(1, "Business name is required"),
@@ -11,10 +11,19 @@ const CreateBusinessSchema = z.object({
   currency: z.string().default("NGN"),
 });
 
-export async function POST(request: Request) {
-  const { user, error: authError } = await getAuthenticatedUser(request);
+const UpdateBusinessSchema = z.object({
+  name: z.string().min(1).optional(),
+  category: z.string().optional(),
+  location: z.string().optional(),
+  language: z.string().optional(),
+  currency: z.string().optional(),
+  description: z.string().optional(),
+});
 
-  if (authError || !user) {
+export async function POST(request: Request) {
+  const { user, db, error: authError } = await getAuthenticatedUser(request);
+
+  if (authError || !user || !db) {
     return Response.json({ error: authError }, { status: 401 });
   }
 
@@ -28,58 +37,69 @@ export async function POST(request: Request) {
     );
   }
 
-  const { data, error } = await supabase
+  // One business per user: the whole API assumes this, so refuse a second one
+  const { data: existing, error: existingError } = await db
+    .from("businesses")
+    .select("id")
+    .eq("owner_id", user.id)
+    .limit(1);
+
+  if (existingError) {
+    return serverError(existingError, "POST api/businesses (existing check)");
+  }
+
+  if (existing && existing.length > 0) {
+    return Response.json({ error: "business_already_exists" }, { status: 409 });
+  }
+
+  const { data, error } = await db
     .from("businesses")
     .insert({
-  owner_id: user.id,
-  name: parsed.data.name,
-  description: parsed.data.description,
-  category: parsed.data.category,
-  location: parsed.data.location,
-  language: parsed.data.language,
-  currency: parsed.data.currency,
-})
+      owner_id: user.id,
+      name: parsed.data.name,
+      description: parsed.data.description,
+      category: parsed.data.category,
+      location: parsed.data.location,
+      language: parsed.data.language,
+      currency: parsed.data.currency,
+    })
     .select()
     .single();
 
   if (error) {
-    return Response.json({ error: error.message }, { status: 500 });
+    // Two requests at the same moment: the unique index lets only one through
+    if (error.code === "23505") {
+      return Response.json({ error: "business_already_exists" }, { status: 409 });
+    }
+    return serverError(error, "POST api/businesses");
   }
 
   return Response.json(data, { status: 201 });
 }
 
 export async function GET(request: Request) {
-  const { user, error: authError } = await getAuthenticatedUser(request);
+  const { user, db, error: authError } = await getAuthenticatedUser(request);
 
-  if (authError || !user) {
+  if (authError || !user || !db) {
     return Response.json({ error: authError }, { status: 401 });
   }
 
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from("businesses")
     .select("*")
     .eq("owner_id", user.id);
 
   if (error) {
-    return Response.json({ error: error.message }, { status: 500 });
+    return serverError(error, "GET api/businesses");
   }
 
   return Response.json(data);
 }
-const UpdateBusinessSchema = z.object({
-  name: z.string().min(1).optional(),
-  category: z.string().optional(),
-  location: z.string().optional(),
-  language: z.string().optional(),
-  currency: z.string().optional(),
-  description: z.string().optional(),
-});
 
 export async function PATCH(request: Request) {
-  const { user, error: authError } = await getAuthenticatedUser(request);
+  const { user, db, error: authError } = await getAuthenticatedUser(request);
 
-  if (authError || !user) {
+  if (authError || !user || !db) {
     return Response.json({ error: authError }, { status: 401 });
   }
 
@@ -102,7 +122,7 @@ export async function PATCH(request: Request) {
     return Response.json({ error: "no_fields_to_update" }, { status: 400 });
   }
 
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from("businesses")
     .update(updates)
     .eq("owner_id", user.id)
@@ -110,7 +130,7 @@ export async function PATCH(request: Request) {
     .maybeSingle();
 
   if (error) {
-    return Response.json({ error: error.message }, { status: 500 });
+    return serverError(error, "PATCH api/businesses");
   }
 
   if (!data) {

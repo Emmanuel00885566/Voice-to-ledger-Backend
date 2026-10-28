@@ -2,6 +2,7 @@ import { z } from "zod";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { getAuthenticatedUser } from "@/lib/auth";
 import { serverError } from "@/lib/errors";
+import { logAudit } from "@/lib/audit";
 import { transactionDateSchema, positiveQuantity } from "@/lib/validation";
 
 const CreateTransactionSchema = z.object({
@@ -142,6 +143,16 @@ export async function POST(request: Request) {
     }
     return serverError(error, "api/transactions");
   }
+
+    await logAudit({
+    db,
+    userId: user.id,
+    businessId,
+    action: "create",
+    entityType: "transaction",
+    entityId: data.id,
+    newValues: data,
+  });
 
   return Response.json(data, { status: 201 });
 }

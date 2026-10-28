@@ -2,6 +2,7 @@ import { z } from "zod";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { getAuthenticatedUser } from "@/lib/auth";
 import { serverError } from "@/lib/errors";
+import { logAudit } from "@/lib/audit";
 
 const UpdateSupplierSchema = z.object({
   name: z.string().min(1).optional(),
@@ -59,6 +60,22 @@ export async function PATCH(
     return Response.json({ error: "no_fields_to_update" }, { status: 400 });
   }
 
+    // Read the current row first so the audit log can keep the old values
+  const { data: before, error: beforeError } = await db
+    .from("suppliers")
+    .select("*")
+    .eq("id", id)
+    .eq("business_id", businessId)
+    .maybeSingle();
+
+  if (beforeError) {
+    return serverError(beforeError, "PATCH read before update");
+  }
+
+  if (!before) {
+    return Response.json({ error: "NOT_FOUND" }, { status: 404 });
+  }
+
   const { data, error } = await db
     .from("suppliers")
     .update(updates)
@@ -74,6 +91,17 @@ export async function PATCH(
   if (!data) {
     return Response.json({ error: "supplier_not_found" }, { status: 404 });
   }
+
+    await logAudit({
+    db,
+    userId: user.id,
+    businessId,
+    action: "update",
+    entityType: "supplier",
+    entityId: id,
+    oldValues: before,
+    newValues: data,
+  });
 
   return Response.json(data);
 }
@@ -111,5 +139,15 @@ export async function DELETE(
     return Response.json({ error: "supplier_not_found" }, { status: 404 });
   }
 
+    await logAudit({
+    db,
+    userId: user.id,
+    businessId,
+    action: "delete",
+    entityType: "supplier",
+    entityId: id,
+    oldValues: data,
+  });
+  
   return Response.json({ success: true, deleted: data });
 }

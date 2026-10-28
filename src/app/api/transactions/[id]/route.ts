@@ -2,6 +2,7 @@ import { z } from "zod";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { getAuthenticatedUser } from "@/lib/auth";
 import { serverError } from "@/lib/errors";
+import { logAudit } from "@/lib/audit";
 import { transactionDateSchema, positiveQuantity } from "@/lib/validation";
 
 const UpdateTransactionSchema = z.object({
@@ -65,6 +66,21 @@ export async function PATCH(
   if (Object.keys(updates).length === 0) {
     return Response.json({ error: "no_fields_to_update" }, { status: 400 });
   }
+  // Read the current row first so the audit log can keep the old values
+  const { data: before, error: beforeError } = await db
+    .from("transactions")
+    .select("*")
+    .eq("id", id)
+    .eq("business_id", businessId)
+    .maybeSingle();
+
+  if (beforeError) {
+    return serverError(beforeError, "PATCH read before update");
+  }
+
+  if (!before) {
+    return Response.json({ error: "NOT_FOUND" }, { status: 404 });
+  }
 
   const { data, error } = await db
     .from("transactions")
@@ -81,6 +97,17 @@ export async function PATCH(
   if (!data) {
     return Response.json({ error: "transaction_not_found" }, { status: 404 });
   }
+
+    await logAudit({
+    db,
+    userId: user.id,
+    businessId,
+    action: "update",
+    entityType: "transaction",
+    entityId: id,
+    oldValues: before,
+    newValues: data,
+  });
 
   return Response.json(data);
 }
@@ -117,6 +144,16 @@ export async function DELETE(
   if (!data) {
     return Response.json({ error: "transaction_not_found" }, { status: 404 });
   }
+
+    await logAudit({
+    db,
+    userId: user.id,
+    businessId,
+    action: "delete",
+    entityType: "transaction",
+    entityId: id,
+    oldValues: data,
+  });
 
   return Response.json({ success: true, deleted: data });
 }

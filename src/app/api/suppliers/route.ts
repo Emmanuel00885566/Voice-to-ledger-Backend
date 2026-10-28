@@ -2,6 +2,7 @@ import { z } from "zod";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { getAuthenticatedUser } from "@/lib/auth";
 import { serverError } from "@/lib/errors";
+import { logAudit } from "@/lib/audit";
 
 const CreateSupplierSchema = z.object({
   name: z.string().min(1, "Supplier name is required"),
@@ -59,6 +60,15 @@ export async function POST(request: Request) {
   if (error) {
     return serverError(error, "api/suppliers");
   }
+  await logAudit({
+    db,
+    userId: user.id,
+    businessId,
+    action: "create",
+    entityType: "supplier",
+    entityId: data.id,
+    newValues: data,
+  });
 
   return Response.json(data, { status: 201 });
 }

@@ -14,3 +14,10 @@ export const transactionDateSchema = z
   .refine((v) => v.slice(0, 10) <= todayInBusinessTz(), "Date cannot be in the future");
 
 export const positiveQuantity = z.number().positive("Quantity must be greater than zero");
+
+// A plain calendar date (YYYY-MM-DD). Unlike transactionDateSchema, future dates are allowed
+// (used for due dates).
+export const dateOnlySchema = z
+  .string()
+  .regex(/^\d{4}-\d{2}-\d{2}$/, "Use YYYY-MM-DD")
+  .refine((v) => !Number.isNaN(Date.parse(v)), "Invalid date");

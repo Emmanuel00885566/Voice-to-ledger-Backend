@@ -3,7 +3,8 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { getAuthenticatedUser } from "@/lib/auth";
 import { serverError } from "@/lib/errors";
 import { logAudit } from "@/lib/audit";
-import { transactionDateSchema, positiveQuantity } from "@/lib/validation";
+import { transactionDateSchema, positiveQuantity, dateOnlySchema } from "@/lib/validation";
+import { checkLinkedParties } from "@/lib/linked-parties";
 
 const UpdateTransactionSchema = z.object({
   type: z.enum(["sale", "purchase", "expense", "receivable", "payable"]).optional(),
@@ -16,6 +17,9 @@ const UpdateTransactionSchema = z.object({
   transaction_date: transactionDateSchema.optional(),
   payment_status: z.enum(["paid", "unpaid", "partially_paid"]).optional(),
   notes: z.string().optional(),
+    customer_id: z.string().uuid().optional(),
+  supplier_id: z.string().uuid().optional(),
+  due_date: dateOnlySchema.optional(),
 });
 
 async function getUserBusinessId(db: SupabaseClient, userId: string) {
@@ -66,6 +70,15 @@ export async function PATCH(
   if (Object.keys(updates).length === 0) {
     return Response.json({ error: "no_fields_to_update" }, { status: 400 });
   }
+
+    // A linked customer or supplier must belong to this business
+  const linkError = await checkLinkedParties(
+    db,
+    businessId,
+    parsed.data.customer_id,
+    parsed.data.supplier_id
+  );
+  if (linkError) return linkError;
   // Read the current row first so the audit log can keep the old values
   const { data: before, error: beforeError } = await db
     .from("transactions")
@@ -138,6 +151,10 @@ export async function DELETE(
     .maybeSingle();
 
   if (error) {
+    // A debt that already has payments cannot be deleted (keeps payment history safe)
+    if (error.code === "23503") {
+      return Response.json({ error: "transaction_has_payments" }, { status: 409 });
+    }
     return serverError(error, "api/transactions/[id]");
   }
 
@@ -145,7 +162,7 @@ export async function DELETE(
     return Response.json({ error: "transaction_not_found" }, { status: 404 });
   }
 
-    await logAudit({
+  await logAudit({
     db,
     userId: user.id,
     businessId,

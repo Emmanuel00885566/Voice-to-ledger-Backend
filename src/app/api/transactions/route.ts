@@ -3,7 +3,8 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { getAuthenticatedUser } from "@/lib/auth";
 import { serverError } from "@/lib/errors";
 import { logAudit } from "@/lib/audit";
-import { transactionDateSchema, positiveQuantity } from "@/lib/validation";
+import { transactionDateSchema, positiveQuantity, dateOnlySchema } from "@/lib/validation";
+import { checkLinkedParties } from "@/lib/linked-parties";
 
 const CreateTransactionSchema = z.object({
   type: z.enum(["sale", "purchase", "expense", "receivable", "payable"]),
@@ -17,6 +18,9 @@ const CreateTransactionSchema = z.object({
   payment_status: z.enum(["paid", "unpaid", "partially_paid"]).default("paid"),
   input_method: z.enum(["voice", "manual"]),
   notes: z.string().optional(),
+  customer_id: z.string().uuid().optional(),
+  supplier_id: z.string().uuid().optional(),
+  due_date: dateOnlySchema.optional(),
   allow_duplicate: z.boolean().optional(),
 });
 
@@ -60,6 +64,16 @@ export async function POST(request: Request) {
   // allow_duplicate is a control flag, not a column, so keep it out of the insert
   const { allow_duplicate, ...transactionData } = parsed.data;
 
+    
+  // A linked customer or supplier must belong to this business
+  const linkError = await checkLinkedParties(
+    db,
+    businessId,
+    transactionData.customer_id,
+    transactionData.supplier_id
+  );
+  if (linkError) return linkError;
+  
   // Idempotency: if the app sends the same Idempotency-Key again (for example a
   // double-tapped confirm or a retry after a bad connection), return the original
   // transaction instead of saving a second one.

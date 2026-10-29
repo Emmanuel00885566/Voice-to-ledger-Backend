@@ -46,6 +46,7 @@ export async function POST(request: Request) {
       model: "nova-2",
       language: "en", // we'll test Pidgin accuracy separately
       smart_format: true,
+      mip_opt_out: true,
     })) as ListenV1Response;
 
     const transcript =

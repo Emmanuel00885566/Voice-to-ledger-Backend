@@ -5,7 +5,7 @@ type AuditInput = {
   userId: string;
   businessId: string | null;
   action: "create" | "update" | "delete";
-  entityType: "transaction" | "customer" | "supplier";
+    entityType: "transaction" | "customer" | "supplier" | "debt_payment";
   entityId: string;
   oldValues?: unknown;
   newValues?: unknown;

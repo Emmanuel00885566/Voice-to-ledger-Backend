@@ -1,5 +1,4 @@
 import { z } from "zod";
-import { geminiModel } from "@/lib/gemini";
 import { getAuthenticatedUser } from "@/lib/auth";
 import { generateText } from "@/lib/gemini";
 
@@ -91,8 +90,7 @@ Rules:
 - Today's date is ${today}, but do not include a date field in your output, it will be added separately`;
 
   try {
-        const rawText = await generateText(prompt);
-
+    const rawText = await generateText(prompt);
     const cleaned = rawText.replace(/```json\s*|\s*```/g, "").trim();
 
     let parsed: unknown;
@@ -100,7 +98,7 @@ Rules:
       parsed = JSON.parse(cleaned);
     } catch {
       return Response.json(
-              { error: "extraction_failed", message: "The AI is busy right now. Please try again in a few seconds, or enter manually." },
+                      { error: "extraction_failed", message: "Could not understand the transaction, please try again or enter manually" },
         { status: 422 }
       );
     }
@@ -126,7 +124,7 @@ Rules:
     // Provider details stay in the server log, not in the response (T-18)
     console.error("[api/transactions/parse]", (err as Error).message);
     return Response.json(
-      { error: "extraction_failed", message: "Something went wrong, please try again or enter manually" },
+            { error: "extraction_failed", message: "The AI is busy right now. Please try again in a few seconds, or enter manually." },
       { status: 500 }
     );
   }

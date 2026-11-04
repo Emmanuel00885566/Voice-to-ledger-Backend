@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { geminiModel } from "@/lib/gemini";
 import { getAuthenticatedUser } from "@/lib/auth";
+import { generateText } from "@/lib/gemini";
 
 // Cap on input length: limits AI cost and the room for prompt-injection text (T-13, T-17)
 const MAX_TEXT_LENGTH = 500;
@@ -90,8 +91,7 @@ Rules:
 - Today's date is ${today}, but do not include a date field in your output, it will be added separately`;
 
   try {
-    const result = await geminiModel.generateContent(prompt);
-    const rawText = result.response.text();
+        const rawText = await generateText(prompt);
 
     const cleaned = rawText.replace(/```json\s*|\s*```/g, "").trim();
 
@@ -100,7 +100,7 @@ Rules:
       parsed = JSON.parse(cleaned);
     } catch {
       return Response.json(
-        { error: "extraction_failed", message: "Could not understand the transaction, please try again or enter manually" },
+              { error: "extraction_failed", message: "The AI is busy right now. Please try again in a few seconds, or enter manually." },
         { status: 422 }
       );
     }

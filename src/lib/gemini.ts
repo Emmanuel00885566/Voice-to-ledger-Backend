@@ -26,10 +26,14 @@ function isBusy(err: unknown) {
   const status = error.status;
   const message = error.message ?? "";
 
+    const name = (err as { name?: string })?.name ?? "";
+
   return (
     status === 429 ||
     status === 500 ||
     status === 503 ||
+    name === "TimeoutError" ||
+    name === "AbortError" ||
     /\b(429|500|503)\b/.test(message)
   );
 }
@@ -62,6 +66,7 @@ export async function generateText(
           thinkingConfig: {
             thinkingLevel: ThinkingLevel.LOW,
           },
+          abortSignal: AbortSignal.timeout(12000),
         },
       });
 

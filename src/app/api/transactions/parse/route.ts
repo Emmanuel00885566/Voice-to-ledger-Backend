@@ -2,6 +2,7 @@
 import { z } from "zod";
 import { getAuthenticatedUser } from "@/lib/auth";
 import { generateText } from "@/lib/gemini";
+import { rateLimit, rateLimitedResponse } from "@/lib/rate-limit";
 
 // Maximum length of the transaction description
 const MAX_TEXT_LENGTH = 500;
@@ -45,6 +46,10 @@ export async function POST(request: Request) {
     );
   }
 
+  // At most 20 parses per minute per user
+  const limited = rateLimit("parse", user.id, 20, 60_000);
+  if (!limited.allowed) return rateLimitedResponse(limited.retryAfterSeconds);
+  
   // Parse request body
   let body: unknown;
 

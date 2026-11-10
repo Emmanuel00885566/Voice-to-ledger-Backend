@@ -2,6 +2,7 @@ import { DeepgramError } from "@deepgram/sdk";
 import type { ListenV1Response } from "@deepgram/sdk";
 import { deepgram } from "@/lib/deepgram";
 import { getAuthenticatedUser } from "@/lib/auth";
+import { rateLimit, rateLimitedResponse } from "@/lib/rate-limit";
 
 // Upload limits (threat model T-17): keeps one request from being huge or off-topic
 const MAX_AUDIO_BYTES = 10 * 1024 * 1024; // 10 MB
@@ -12,7 +13,9 @@ export async function POST(request: Request) {
   if (authError || !user) {
     return Response.json({ error: authError }, { status: 401 });
   }
-
+  // At most 10 transcriptions per minute per user
+  const limited = rateLimit("transcribe", user.id, 10, 60_000);
+  if (!limited.allowed) return rateLimitedResponse(limited.retryAfterSeconds);
   let formData: FormData;
   try {
     formData = await request.formData();

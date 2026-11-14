@@ -4,7 +4,7 @@ type AuditInput = {
   db: SupabaseClient;
   userId: string;
   businessId: string | null;
-  action: "create" | "update" | "delete";
+  action: "create" | "update" | "delete" | "export";
     entityType: "transaction" | "customer" | "supplier" | "debt_payment";
   entityId: string;
   oldValues?: unknown;

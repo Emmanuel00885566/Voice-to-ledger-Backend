@@ -3,6 +3,7 @@ import { z } from "zod";
 import { getAuthenticatedUser } from "@/lib/auth";
 import { generateText } from "@/lib/gemini";
 import { rateLimit, rateLimitedResponse } from "@/lib/rate-limit";
+import { Type, type Schema } from "@google/genai";
 
 // Maximum length of the transaction description
 const MAX_TEXT_LENGTH = 500;
@@ -34,6 +35,72 @@ const ExtractedTransactionSchema = z.object({
   notes: z.string().nullable(),
   confidence: z.number().min(0).max(1),
 });
+
+const EXTRACTION_RESPONSE_SCHEMA: Schema = {
+  type: Type.OBJECT,
+  properties: {
+    type: {
+      type: Type.STRING,
+      enum: ["sale", "purchase", "expense", "receivable", "payable"],
+    },
+    product_name: { type: Type.STRING, nullable: true },
+    quantity: { type: Type.NUMBER, nullable: true },
+    unit: { type: Type.STRING, nullable: true },
+    amount: { type: Type.NUMBER },
+    currency: { type: Type.STRING, enum: ["NGN"] },
+    customer_name: { type: Type.STRING, nullable: true },
+    supplier_name: { type: Type.STRING, nullable: true },
+    payment_status: {
+      type: Type.STRING,
+      enum: ["paid", "unpaid", "partially_paid"],
+    },
+    notes: { type: Type.STRING, nullable: true },
+    confidence: { type: Type.NUMBER },
+  },
+  required: [
+    "type",
+    "product_name",
+    "quantity",
+    "unit",
+    "amount",
+    "currency",
+    "customer_name",
+    "supplier_name",
+    "payment_status",
+    "notes",
+    "confidence",
+  ],
+};
+
+// Safety net in case the model still wraps or renames things
+function unwrapExtraction(raw: unknown): unknown {
+  if (Array.isArray(raw)) return raw[0] ?? null;
+  if (raw && typeof raw === "object") {
+    const o = raw as Record<string, unknown>;
+    if (Array.isArray(o.transactions)) return o.transactions[0] ?? null;
+  }
+  return raw;
+}
+
+const TYPE_ALIASES: Record<string, string> = {
+  sales: "sale", income: "sale", revenue: "sale",
+  purchases: "purchase", bought: "purchase", buy: "purchase",
+  expenses: "expense", cost: "expense",
+  receivables: "receivable", payables: "payable",
+};
+
+function normalizeExtraction(raw: unknown): unknown {
+  const obj = unwrapExtraction(raw);
+  if (obj && typeof obj === "object" && !Array.isArray(obj)) {
+    const o = { ...(obj as Record<string, unknown>) };
+    if (typeof o.type === "string") {
+      const v = o.type.trim().toLowerCase();
+      o.type = TYPE_ALIASES[v] ?? v;
+    }
+    return o;
+  }
+  return obj;
+}
 
 export async function POST(request: Request) {
   // Authenticate the user
@@ -118,11 +185,12 @@ Rules:
 - Always return the amount as a number in Nigerian Naira, without currency symbols or commas.
 - Return null for fields that cannot be identified.
 - Do not invent names, quantities, products, or amounts.
+- If the sentence describes more than one transaction, extract only the first one.
 - Return valid JSON only.`;
 
   try {
     // Ask Gemini to extract transaction details
-    const rawText = await generateText(prompt);
+        const rawText = await generateText(prompt, EXTRACTION_RESPONSE_SCHEMA);
 
     // Remove possible Markdown code fences
     const cleaned = rawText
@@ -147,7 +215,7 @@ Rules:
     }
 
     // Validate extracted transaction
-    const validated = ExtractedTransactionSchema.safeParse(parsed);
+        const validated = ExtractedTransactionSchema.safeParse(normalizeExtraction(parsed));
 
     if (!validated.success) {
       console.error(

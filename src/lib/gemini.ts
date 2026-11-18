@@ -1,5 +1,5 @@
 
-import { GoogleGenAI, ThinkingLevel } from "@google/genai";
+import { GoogleGenAI, ThinkingLevel, type Schema } from "@google/genai";
 
 const apiKey = process.env.GEMINI_API_KEY;
 
@@ -56,12 +56,13 @@ function isAuthenticationError(err: unknown): boolean {
 }
 
 export async function generateText(
-  prompt: string
+  prompt: string,
+  responseSchema?: Schema
 ): Promise<string> {
   const modelPlan = [
     {
       model: PRIMARY_MODEL,
-      attempts: 3,
+      attempts: 2,
     },
     ...(FALLBACK_MODEL && FALLBACK_MODEL !== PRIMARY_MODEL
       ? [
@@ -90,7 +91,7 @@ export async function generateText(
           config: {
             temperature: 0,
             responseMimeType: "application/json",
-
+            ...(responseSchema ? { responseSchema } : {}),
             ...(THINKING_LEVEL === "low"
               ? {
                   thinkingConfig: {

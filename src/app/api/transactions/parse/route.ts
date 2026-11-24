@@ -1,4 +1,3 @@
-
 import { z } from "zod";
 import { getAuthenticatedUser } from "@/lib/auth";
 import { generateText } from "@/lib/gemini";
@@ -34,6 +33,7 @@ const ExtractedTransactionSchema = z.object({
   payment_status: PaymentStatusEnum,
   notes: z.string().nullable(),
   confidence: z.number().min(0).max(1),
+  cost_amount: z.number().nonnegative().nullable(),
 });
 
 const EXTRACTION_RESPONSE_SCHEMA: Schema = {
@@ -56,6 +56,7 @@ const EXTRACTION_RESPONSE_SCHEMA: Schema = {
     },
     notes: { type: Type.STRING, nullable: true },
     confidence: { type: Type.NUMBER },
+    cost_amount: { type: Type.NUMBER, nullable: true },
   },
   required: [
     "type",
@@ -69,6 +70,7 @@ const EXTRACTION_RESPONSE_SCHEMA: Schema = {
     "payment_status",
     "notes",
     "confidence",
+    "cost_amount",
   ],
 };
 
@@ -116,7 +118,7 @@ export async function POST(request: Request) {
   // At most 20 parses per minute per user
   const limited = rateLimit("parse", user.id, 20, 60_000);
   if (!limited.allowed) return rateLimitedResponse(limited.retryAfterSeconds);
-  
+
   // Parse request body
   let body: unknown;
 
@@ -171,6 +173,7 @@ Extract the transaction as JSON matching exactly this shape, with no extra text,
   "supplier_name": string or null,
   "payment_status": "paid" | "unpaid" | "partially_paid",
   "notes": string or null,
+  "cost_amount": number or null,
   "confidence": number between 0 and 1
 }
 
@@ -186,11 +189,12 @@ Rules:
 - Return null for fields that cannot be identified.
 - Do not invent names, quantities, products, or amounts.
 - If the sentence describes more than one transaction, extract only the first one.
-- Return valid JSON only.`;
+- Return valid JSON only.
+- cost_amount applies only to a sale: the total amount the trader says the goods cost them. Use null if it is not stated or for any other type. Never guess it.`;
 
   try {
     // Ask Gemini to extract transaction details
-        const rawText = await generateText(prompt, EXTRACTION_RESPONSE_SCHEMA);
+    const rawText = await generateText(prompt, EXTRACTION_RESPONSE_SCHEMA);
 
     // Remove possible Markdown code fences
     const cleaned = rawText
@@ -215,7 +219,7 @@ Rules:
     }
 
     // Validate extracted transaction
-        const validated = ExtractedTransactionSchema.safeParse(normalizeExtraction(parsed));
+    const validated = ExtractedTransactionSchema.safeParse(normalizeExtraction(parsed));
 
     if (!validated.success) {
       console.error(
@@ -245,8 +249,11 @@ Rules:
       );
     }
 
-    // Return validated transaction details
-    return Response.json(validated.data);
+    // Return validated transaction details (only sales carry a cost)
+    return Response.json({
+      ...validated.data,
+      cost_amount: validated.data.type === "sale" ? validated.data.cost_amount : null,
+    });
 
   } catch (err) {
     // Keep provider details in server logs

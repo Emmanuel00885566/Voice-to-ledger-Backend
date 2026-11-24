@@ -25,9 +25,18 @@ const CreateTransactionSchema = z
     due_date: dateOnlySchema.optional(),
     allow_duplicate: z.boolean().optional(),
     amount_paid: z.number().positive().optional(),
+    cost_amount: z.number().nonnegative().optional(),
   })
   .superRefine((v, ctx) => {
     const debt = v.type === "receivable" || v.type === "payable";
+
+    if (v.cost_amount !== undefined && v.type !== "sale") {
+      ctx.addIssue({
+        code: "custom",
+        path: ["cost_amount"],
+        message: "Only allowed for a sale",
+      });
+    }
 
     if (v.amount_paid !== undefined) {
       if (!debt || v.payment_status !== "partially_paid") {

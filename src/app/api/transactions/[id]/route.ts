@@ -17,9 +17,10 @@ const UpdateTransactionSchema = z.object({
   transaction_date: transactionDateSchema.optional(),
   payment_status: z.enum(["paid", "unpaid", "partially_paid"]).optional(),
   notes: z.string().optional(),
-    customer_id: z.string().uuid().optional(),
+  customer_id: z.string().uuid().optional(),
   supplier_id: z.string().uuid().optional(),
   due_date: dateOnlySchema.optional(),
+  cost_amount: z.number().nonnegative().nullable().optional(),
 });
 
 async function getUserBusinessId(db: SupabaseClient, userId: string) {
@@ -63,7 +64,7 @@ export async function PATCH(
     return Response.json({ error: businessError ?? "business_not_found" }, { status: 404 });
   }
 
-  const updates = Object.fromEntries(
+  const updates: Record<string, unknown> = Object.fromEntries(
     Object.entries(parsed.data).filter(([, value]) => value !== undefined)
   );
 
@@ -71,7 +72,7 @@ export async function PATCH(
     return Response.json({ error: "no_fields_to_update" }, { status: 400 });
   }
 
-    // A linked customer or supplier must belong to this business
+  // A linked customer or supplier must belong to this business
   const linkError = await checkLinkedParties(
     db,
     businessId,
@@ -79,6 +80,7 @@ export async function PATCH(
     parsed.data.supplier_id
   );
   if (linkError) return linkError;
+
   // Read the current row first so the audit log can keep the old values
   const { data: before, error: beforeError } = await db
     .from("transactions")
@@ -93,6 +95,24 @@ export async function PATCH(
 
   if (!before) {
     return Response.json({ error: "NOT_FOUND" }, { status: 404 });
+  }
+
+  // Cost price belongs to sales only
+  const effectiveType = parsed.data.type ?? before.type;
+  if (effectiveType !== "sale") {
+    if (typeof parsed.data.cost_amount === "number") {
+      return Response.json(
+        {
+          error: "validation_failed",
+          fields: { cost_amount: ["Only allowed for a sale"] },
+        },
+        { status: 400 }
+      );
+    }
+    // A sale changed into another type must not keep its old cost
+    if (before.cost_amount !== null && before.cost_amount !== undefined) {
+      updates.cost_amount = null;
+    }
   }
 
   const { data, error } = await db
@@ -111,7 +131,7 @@ export async function PATCH(
     return Response.json({ error: "transaction_not_found" }, { status: 404 });
   }
 
-    await logAudit({
+  await logAudit({
     db,
     userId: user.id,
     businessId,

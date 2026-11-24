@@ -7,6 +7,7 @@ type Row = {
   id: string;
   type: string | null;
   amount: number | string | null;
+  cost_amount: number | string | null;
   payment_status: string | null;
   transaction_date: string | null;
 };
@@ -18,6 +19,9 @@ type Acc = {
   receivables: number;
   payables: number;
   saleCount: number;
+  costedSales: number; // revenue of sales that have a cost price
+  cogs: number; // sum of those cost prices
+  costedCount: number;
 };
 
 const RANGES: Record<string, number> = { "3m": 3, "6m": 6, "12m": 12 };
@@ -30,10 +34,17 @@ function round1(n: number): number {
   return Math.round(n * 10) / 10;
 }
 function emptyAcc(): Acc {
-  return { sales: 0, purchases: 0, expenses: 0, receivables: 0, payables: 0, saleCount: 0 };
+  return {
+    sales: 0, purchases: 0, expenses: 0, receivables: 0, payables: 0,
+    saleCount: 0, costedSales: 0, cogs: 0, costedCount: 0,
+  };
 }
 function change(cur: number, prev: number): number | null {
   return prev > 0 ? round1(((cur - prev) / prev) * 100) : null;
+}
+// For values that can be negative (profit)
+function changeSigned(cur: number, prev: number): number | null {
+  return prev !== 0 ? round1(((cur - prev) / Math.abs(prev)) * 100) : null;
 }
 
 function accumulate(
@@ -41,12 +52,18 @@ function accumulate(
   type: string | null,
   amount: number,
   status: string | null,
-  remaining: number
+  remaining: number,
+  cost: number | null
 ) {
   switch (type) {
     case "sale":
       acc.sales += amount;
       acc.saleCount += 1;
+      if (cost !== null) {
+        acc.costedSales += amount;
+        acc.cogs += cost;
+        acc.costedCount += 1;
+      }
       break;
     case "purchase":
       acc.purchases += amount;
@@ -97,17 +114,20 @@ export async function GET(request: Request) {
   const startStr = ymd(startOf(n - 1));
   const prevStartStr = ymd(startOf(2 * n - 1));
 
-  const buckets = [] as { key: string; label: string; sales: number; purchases: number; expenses: number }[];
+  const buckets = [] as {
+    key: string; label: string;
+    sales: number; purchases: number; expenses: number; gross: number;
+  }[];
   for (let i = n - 1; i >= 0; i--) {
     const d = startOf(i);
     const key = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
-    buckets.push({ key, label: NAMES[d.getUTCMonth()], sales: 0, purchases: 0, expenses: 0 });
+    buckets.push({ key, label: NAMES[d.getUTCMonth()], sales: 0, purchases: 0, expenses: 0, gross: 0 });
   }
   const byMonth = new Map(buckets.map((b) => [b.key, b]));
 
   const { data, error } = await db
     .from("transactions")
-    .select("id,type,amount,payment_status,transaction_date")
+    .select("id,type,amount,cost_amount,payment_status,transaction_date")
     .eq("business_id", business.id)
     .gte("transaction_date", prevStartStr)
     .limit(10000);
@@ -130,11 +150,17 @@ export async function GET(request: Request) {
     const date = r.transaction_date ?? "";
     const remaining = outstandingOf(amount, paid.get(r.id) ?? 0);
 
+    const rawCost = r.cost_amount === null || r.cost_amount === undefined ? null : Number(r.cost_amount);
+    const cost = rawCost !== null && Number.isFinite(rawCost) ? rawCost : null;
+
     if (date >= startStr) {
-      accumulate(cur, r.type, amount, r.payment_status, remaining);
+      accumulate(cur, r.type, amount, r.payment_status, remaining, cost);
       const b = byMonth.get(date.slice(0, 7));
       if (b) {
-        if (r.type === "sale") b.sales += amount;
+        if (r.type === "sale") {
+          b.sales += amount;
+          if (cost !== null) b.gross += amount - cost;
+        }
         if (r.type === "purchase") b.purchases += amount;
         if (r.type === "expense") b.expenses += amount;
       }
@@ -143,7 +169,7 @@ export async function GET(request: Request) {
         typeStats[r.type].amount += amount;
       }
     } else if (date >= prevStartStr) {
-      accumulate(prev, r.type, amount, r.payment_status, remaining);
+      accumulate(prev, r.type, amount, r.payment_status, remaining, cost);
     }
   }
 
@@ -163,10 +189,17 @@ export async function GET(request: Request) {
     pct_amount: totalAmount > 0 ? round1((typeStats[t].amount / totalAmount) * 100) : 0,
   }));
 
+  // Profit: Gross = Sales - COGS (sales that have a cost price), Net = Gross - Expenses
+  const grossCur = cur.costedSales - cur.cogs;
+  const grossPrev = prev.costedSales - prev.cogs;
+  const netCur = grossCur - cur.expenses;
+  const netPrev = grossPrev - prev.expenses;
+
   return Response.json(
     {
       range: rangeKey,
-      has_previous: prev.sales + prev.purchases + prev.expenses + prev.receivables + prev.payables > 0,
+      has_previous:
+        prev.sales + prev.purchases + prev.expenses + prev.receivables + prev.payables > 0,
       cards: {
         total_sales: { value: round2(cur.sales), change: change(cur.sales, prev.sales) },
         total_purchases: { value: round2(cur.purchases), change: change(cur.purchases, prev.purchases) },
@@ -174,6 +207,15 @@ export async function GET(request: Request) {
         outstanding_receivables: { value: round2(cur.receivables), change: change(cur.receivables, prev.receivables) },
         outstanding_payables: { value: round2(cur.payables), change: change(cur.payables, prev.payables) },
         avg_sales_value: { value: round2(avgSale), change: change(avgSale, prevAvgSale) },
+      },
+      profit: {
+        gross_profit: { value: round2(grossCur), change: changeSigned(grossCur, grossPrev) },
+        net_profit: { value: round2(netCur), change: changeSigned(netCur, netPrev) },
+        gross_margin_pct:
+          cur.costedSales > 0 ? round1((grossCur / cur.costedSales) * 100) : null,
+        cogs: round2(cur.cogs),
+        costed_sales_count: cur.costedCount,
+        sales_count: cur.saleCount,
       },
       avg_monthly_sales: round2(cur.sales / n),
       sales_growth_pct: change(cur.sales, prev.sales),
@@ -183,6 +225,8 @@ export async function GET(request: Request) {
         sales: round2(b.sales),
         purchases: round2(b.purchases),
         expenses: round2(b.expenses),
+        gross_profit: round2(b.gross),
+        net_profit: round2(b.gross - b.expenses),
       })),
       by_type: byType,
       total_count: totalCount,

@@ -3,10 +3,12 @@ import { serverError } from "@/lib/errors";
 import { logAudit } from "@/lib/audit";
 import { rateLimit, rateLimitedResponse } from "@/lib/rate-limit";
 import { dateOnlySchema } from "@/lib/validation";
+import { getPaidByTransaction, outstandingOf } from "@/lib/debts";
 
 type NameRef = { name: string | null } | { name: string | null }[] | null;
 
 type Row = {
+  id: string;
   transaction_date: string | null;
   type: string | null;
   description: string | null;
@@ -59,7 +61,7 @@ export async function GET(request: Request) {
   let query = db
     .from("transactions")
     .select(
-      "transaction_date,type,description,product_name,amount,payment_status,customers(name),suppliers(name)"
+      "id,transaction_date,type,description,product_name,amount,payment_status,customers(name),suppliers(name)"
     )
     .eq("business_id", business.id)
     .order("transaction_date", { ascending: false })
@@ -78,6 +80,9 @@ export async function GET(request: Request) {
 
   const { data, error } = await query;
   if (error) return serverError(error, "export.summary.transactions");
+
+  const { paid, error: paidError } = await getPaidByTransaction(db, business.id);
+  if (paidError || !paid) return serverError(paidError, "export.summary.payments");
 
   const rows = (data ?? []) as unknown as Row[];
 
@@ -109,20 +114,24 @@ export async function GET(request: Request) {
         totals.expenses += amount;
         m.costs += amount;
         break;
-      case "receivable":
+      case "receivable": {
         totals.receivables += amount;
-        if (r.payment_status !== "paid") {
+        const remaining = outstandingOf(amount, paid.get(r.id) ?? 0);
+        if (r.payment_status !== "paid" && remaining > 0) {
           outstanding.receivables_count += 1;
-          outstanding.receivables_value += amount;
+          outstanding.receivables_value += remaining;
         }
         break;
-      case "payable":
+      }
+      case "payable": {
         totals.payables += amount;
-        if (r.payment_status !== "paid") {
+        const remaining = outstandingOf(amount, paid.get(r.id) ?? 0);
+        if (r.payment_status !== "paid" && remaining > 0) {
           outstanding.payables_count += 1;
-          outstanding.payables_value += amount;
+          outstanding.payables_value += remaining;
         }
         break;
+      }
       default:
         break;
     }

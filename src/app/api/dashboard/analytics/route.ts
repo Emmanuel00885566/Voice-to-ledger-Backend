@@ -1,8 +1,10 @@
 import { getAuthenticatedUser } from "@/lib/auth";
 import { serverError } from "@/lib/errors";
 import { rateLimit, rateLimitedResponse } from "@/lib/rate-limit";
+import { getPaidByTransaction, outstandingOf } from "@/lib/debts";
 
 type Row = {
+  id: string;
   type: string | null;
   amount: number | string | null;
   payment_status: string | null;
@@ -34,7 +36,13 @@ function change(cur: number, prev: number): number | null {
   return prev > 0 ? round1(((cur - prev) / prev) * 100) : null;
 }
 
-function accumulate(acc: Acc, type: string | null, amount: number, status: string | null) {
+function accumulate(
+  acc: Acc,
+  type: string | null,
+  amount: number,
+  status: string | null,
+  remaining: number
+) {
   switch (type) {
     case "sale":
       acc.sales += amount;
@@ -47,10 +55,10 @@ function accumulate(acc: Acc, type: string | null, amount: number, status: strin
       acc.expenses += amount;
       break;
     case "receivable":
-      if (status !== "paid") acc.receivables += amount;
+      if (status !== "paid") acc.receivables += remaining;
       break;
     case "payable":
-      if (status !== "paid") acc.payables += amount;
+      if (status !== "paid") acc.payables += remaining;
       break;
     default:
       break;
@@ -99,11 +107,14 @@ export async function GET(request: Request) {
 
   const { data, error } = await db
     .from("transactions")
-    .select("type,amount,payment_status,transaction_date")
+    .select("id,type,amount,payment_status,transaction_date")
     .eq("business_id", business.id)
     .gte("transaction_date", prevStartStr)
     .limit(10000);
   if (error) return serverError(error, "analytics.transactions");
+
+  const { paid, error: paidError } = await getPaidByTransaction(db, business.id);
+  if (paidError || !paid) return serverError(paidError, "analytics.payments");
 
   const cur = emptyAcc();
   const prev = emptyAcc();
@@ -117,9 +128,10 @@ export async function GET(request: Request) {
     const amount = Number(r.amount ?? 0);
     if (!Number.isFinite(amount)) continue;
     const date = r.transaction_date ?? "";
+    const remaining = outstandingOf(amount, paid.get(r.id) ?? 0);
 
     if (date >= startStr) {
-      accumulate(cur, r.type, amount, r.payment_status);
+      accumulate(cur, r.type, amount, r.payment_status, remaining);
       const b = byMonth.get(date.slice(0, 7));
       if (b) {
         if (r.type === "sale") b.sales += amount;
@@ -131,7 +143,7 @@ export async function GET(request: Request) {
         typeStats[r.type].amount += amount;
       }
     } else if (date >= prevStartStr) {
-      accumulate(prev, r.type, amount, r.payment_status);
+      accumulate(prev, r.type, amount, r.payment_status, remaining);
     }
   }
 

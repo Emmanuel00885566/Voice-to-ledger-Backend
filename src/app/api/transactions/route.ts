@@ -5,24 +5,52 @@ import { serverError } from "@/lib/errors";
 import { logAudit } from "@/lib/audit";
 import { transactionDateSchema, positiveQuantity, dateOnlySchema } from "@/lib/validation";
 import { checkLinkedParties } from "@/lib/linked-parties";
+import { round2 } from "@/lib/debts";
 
-const CreateTransactionSchema = z.object({
-  type: z.enum(["sale", "purchase", "expense", "receivable", "payable"]),
-  description: z.string().optional(),
-  product_name: z.string().optional(),
-  quantity: positiveQuantity.optional(),
-  unit: z.string().optional(),
-  amount: z.number().positive(),
-  currency: z.string().default("NGN"),
-  transaction_date: transactionDateSchema.optional(),
-  payment_status: z.enum(["paid", "unpaid", "partially_paid"]).default("paid"),
-  input_method: z.enum(["voice", "manual"]),
-  notes: z.string().optional(),
-  customer_id: z.string().uuid().optional(),
-  supplier_id: z.string().uuid().optional(),
-  due_date: dateOnlySchema.optional(),
-  allow_duplicate: z.boolean().optional(),
-});
+const CreateTransactionSchema = z
+  .object({
+    type: z.enum(["sale", "purchase", "expense", "receivable", "payable"]),
+    description: z.string().optional(),
+    product_name: z.string().optional(),
+    quantity: positiveQuantity.optional(),
+    unit: z.string().optional(),
+    amount: z.number().positive(),
+    currency: z.string().default("NGN"),
+    transaction_date: transactionDateSchema.optional(),
+    payment_status: z.enum(["paid", "unpaid", "partially_paid"]).default("paid"),
+    input_method: z.enum(["voice", "manual"]),
+    notes: z.string().optional(),
+    customer_id: z.string().uuid().optional(),
+    supplier_id: z.string().uuid().optional(),
+    due_date: dateOnlySchema.optional(),
+    allow_duplicate: z.boolean().optional(),
+    amount_paid: z.number().positive().optional(),
+  })
+  .superRefine((v, ctx) => {
+    const debt = v.type === "receivable" || v.type === "payable";
+
+    if (v.amount_paid !== undefined) {
+      if (!debt || v.payment_status !== "partially_paid") {
+        ctx.addIssue({
+          code: "custom",
+          path: ["amount_paid"],
+          message: "Only allowed for a partly paid receivable or payable",
+        });
+      } else if (v.amount_paid >= v.amount) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["amount_paid"],
+          message: "Must be less than the total amount",
+        });
+      }
+    } else if (debt && v.payment_status === "partially_paid") {
+      ctx.addIssue({
+        code: "custom",
+        path: ["amount_paid"],
+        message: "Required when a debt is partly paid",
+      });
+    }
+  });
 
 async function getUserBusinessId(db: SupabaseClient, userId: string) {
   const { data, error } = await db
@@ -61,10 +89,10 @@ export async function POST(request: Request) {
     return Response.json({ error: businessError ?? "business_not_found" }, { status: 404 });
   }
 
-  // allow_duplicate is a control flag, not a column, so keep it out of the insert
-  const { allow_duplicate, ...transactionData } = parsed.data;
+  // allow_duplicate and amount_paid are not columns on transactions, so keep
+  // them out of the insert
+  const { allow_duplicate, amount_paid, ...transactionData } = parsed.data;
 
-    
   // A linked customer or supplier must belong to this business
   const linkError = await checkLinkedParties(
     db,
@@ -73,7 +101,7 @@ export async function POST(request: Request) {
     transactionData.supplier_id
   );
   if (linkError) return linkError;
-  
+
   // Idempotency: if the app sends the same Idempotency-Key again (for example a
   // double-tapped confirm or a retry after a bad connection), return the original
   // transaction instead of saving a second one.
@@ -158,7 +186,47 @@ export async function POST(request: Request) {
     return serverError(error, "api/transactions");
   }
 
+  // First payment on a partly paid debt. If it fails, remove the debt again
+  // so nothing is left half-saved.
+  let initialPayment: { amount_paid: number; outstanding: number } | null = null;
+
+  if (amount_paid !== undefined) {
+    const { data: payment, error: payError } = await db
+      .from("debt_payments")
+      .insert({
+        business_id: businessId,
+        transaction_id: data.id,
+        amount: amount_paid,
+      })
+      .select()
+      .single();
+
+    if (payError) {
+      await db
+        .from("transactions")
+        .delete()
+        .eq("id", data.id)
+        .eq("business_id", businessId);
+      return serverError(payError, "api/transactions (initial payment)");
+    }
+
     await logAudit({
+      db,
+      userId: user.id,
+      businessId,
+      action: "create",
+      entityType: "debt_payment",
+      entityId: payment.id,
+      newValues: payment,
+    });
+
+    initialPayment = {
+      amount_paid,
+      outstanding: round2(Number(data.amount) - amount_paid),
+    };
+  }
+
+  await logAudit({
     db,
     userId: user.id,
     businessId,
@@ -168,7 +236,9 @@ export async function POST(request: Request) {
     newValues: data,
   });
 
-  return Response.json(data, { status: 201 });
+  return Response.json(initialPayment ? { ...data, ...initialPayment } : data, {
+    status: 201,
+  });
 }
 
 export async function GET(request: Request) {
